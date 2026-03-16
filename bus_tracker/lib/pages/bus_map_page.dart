@@ -8,7 +8,6 @@ import '../services/location_service.dart';
 import '../services/firebase_bus_service.dart';
 import '../services/open_route_service.dart';
 import '../widgets/bus_marker.dart';
-import '../widgets/route_selector.dart';
 import '../utils/map_utils.dart';
 
 /// Main page displaying the bus tracking map
@@ -49,6 +48,11 @@ class _BusMapPageState extends State<BusMapPage> {
   List<String> availableRoutes = [];
   bool _showRouteSelector = false;
 
+  // Picked bus message state
+  bool _showPickedBusMessage = false;
+  String? _pickedBusId;
+  Timer? _pickedBusMessageTimer;
+
   @override
   void initState() {
     super.initState();
@@ -64,6 +68,7 @@ class _BusMapPageState extends State<BusMapPage> {
     _busSubscription?.cancel();
     _userLocationSubscription?.cancel();
     _etaDebounceTimer?.cancel();
+    _pickedBusMessageTimer?.cancel();
     super.dispose();
   }
 
@@ -110,7 +115,8 @@ class _BusMapPageState extends State<BusMapPage> {
           availableRoutes = _busService.getAvailableRoutes(busData);
 
           // If the preselected route is no longer available, fall back to all routes.
-          if (selectedRoute != null && !availableRoutes.contains(selectedRoute)) {
+          if (selectedRoute != null &&
+              !availableRoutes.contains(selectedRoute)) {
             selectedRoute = null;
           }
 
@@ -194,7 +200,9 @@ class _BusMapPageState extends State<BusMapPage> {
   void _scheduleEstimateRefresh({bool immediate = false}) {
     _etaDebounceTimer?.cancel();
 
-    final delay = immediate ? Duration.zero : const Duration(milliseconds: 1500);
+    final delay = immediate
+        ? Duration.zero
+        : const Duration(milliseconds: 1500);
     _etaDebounceTimer = Timer(delay, _refreshSelectedBusEstimate);
   }
 
@@ -256,7 +264,10 @@ class _BusMapPageState extends State<BusMapPage> {
     }
   }
 
-  RouteEstimate _buildFallbackEstimate({required LatLng from, required LatLng to}) {
+  RouteEstimate _buildFallbackEstimate({
+    required LatLng from,
+    required LatLng to,
+  }) {
     const averageCitySpeedKmPerHour = 28.0;
     final straightLineKm = const Distance().as(LengthUnit.Kilometer, from, to);
     final roadAdjustedDistanceKm = straightLineKm * 1.3;
@@ -286,6 +297,20 @@ class _BusMapPageState extends State<BusMapPage> {
     mapController.move(myCurrentLocation ?? _startLocation, 17);
   }
 
+  void _updateMapCenterLocation(MapPosition position) {
+    if (position.center == null) {
+      return;
+    }
+
+    setState(() {
+      _startLocation = position.center!;
+    });
+
+    if (_selectedBusId != null) {
+      _scheduleEstimateRefresh(immediate: true);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final displayBusData = filteredBusData;
@@ -293,18 +318,50 @@ class _BusMapPageState extends State<BusMapPage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text("Bus Tracker - Real-time"),
-        backgroundColor: Colors.deepOrange,
+        backgroundColor: const Color(0xFFfec205),
       ),
       body: Stack(
         children: [
           _buildMap(displayBusData),
+          _buildCenterBalloonMarker(),
           _buildRouteMenuButton(),
           _buildRouteSelectorPanel(),
-          _buildTopPromptMessage(),
           _buildSelectedBusEtaCard(),
+          _buildPickedBusMessage(),
         ],
       ),
       floatingActionButton: _buildFloatingButtons(displayBusData),
+    );
+  }
+
+  /// Build the map widget
+  Widget _buildCenterBalloonMarker() {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.location_on,
+            color: Colors.blue,
+            size: 40,
+            shadows: [
+              Shadow(
+                color: Colors.black.withValues(alpha: 0.3),
+                blurRadius: 4,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          Container(
+            width: 10,
+            height: 10,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: Colors.blue,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -315,6 +372,11 @@ class _BusMapPageState extends State<BusMapPage> {
       options: MapOptions(
         initialCenter: _startLocation,
         initialZoom: 17,
+        onPositionChanged: (MapPosition position, bool hasGesture) {
+          if (hasGesture) {
+            _updateMapCenterLocation(position);
+          }
+        },
         onMapReady: () {
           _isMapReady = true;
           _focusUserOnLoad();
@@ -328,37 +390,37 @@ class _BusMapPageState extends State<BusMapPage> {
         ),
         MarkerLayer(
           markers: [
-            Marker(
-              point: _startLocation,
-              width: 24,
-              height: 24,
-              child: const Icon(
-                Icons.place,
-                color: Colors.blue,
-                size: 20,
-              ),
-            ),
-            if (myCurrentLocation != null)
+            if (!_showRouteSelector && myCurrentLocation != null)
               Marker(
                 point: myCurrentLocation!,
-                width: 22,
-                height: 22,
-                child: const Icon(
-                  Icons.my_location,
-                  color: Colors.red,
-                  size: 18,
+                width: 28,
+                height: 28,
+                child: Container(
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.blue.withValues(alpha: 0.25),
+                  ),
+                  alignment: Alignment.center,
+                  child: Container(
+                    width: 12,
+                    height: 12,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.blue,
+                      border: Border.all(color: Colors.white, width: 2),
+                    ),
+                  ),
                 ),
               ),
             // Bus markers
-            ...displayBusData.entries
-                .map(
-                  (entry) => BusMarker.create(
-                    entry.key,
-                    entry.value,
-                    onTap: () => _onBusTapped(entry.key),
-                  ),
-                )
-                .toList(),
+            if (!_showRouteSelector)
+              ...displayBusData.entries.map(
+                (entry) => BusMarker.create(
+                  entry.key,
+                  entry.value,
+                  onTap: () => _onBusTapped(entry.key),
+                ),
+              ),
           ],
         ),
       ],
@@ -366,6 +428,10 @@ class _BusMapPageState extends State<BusMapPage> {
   }
 
   Widget _buildSelectedBusEtaCard() {
+    if (_showRouteSelector) {
+      return const SizedBox.shrink();
+    }
+
     final selectedBusId = _selectedBusId;
     if (selectedBusId == null) {
       return const SizedBox.shrink();
@@ -376,10 +442,18 @@ class _BusMapPageState extends State<BusMapPage> {
       return const SizedBox.shrink();
     }
 
+    final crowdColor = selectedBus.occupancyColor;
+    final bottomInset = MediaQuery.of(context).padding.bottom;
+    final arrivalLabel = _selectedBusEstimate != null
+        ? 'Bus arriving in ${_selectedBusEstimate!.durationMinutes.toStringAsFixed(0)} mins'
+        : (_isFetchingEstimate
+              ? 'Bus arriving in ...'
+              : 'Bus arrival time is being prepared');
+
     return Positioned(
       left: 12,
       right: 12,
-      bottom: 20,
+      bottom: 10 + bottomInset,
       child: Card(
         elevation: 8,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
@@ -391,7 +465,7 @@ class _BusMapPageState extends State<BusMapPage> {
             children: [
               Row(
                 children: [
-                  const Icon(Icons.directions_bus, color: Colors.deepOrange),
+                  Icon(Icons.directions_bus, color: crowdColor),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -416,6 +490,38 @@ class _BusMapPageState extends State<BusMapPage> {
                   ),
                 ],
               ),
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.blue.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.blue.withValues(alpha: 0.3)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.access_time_filled,
+                      size: 16,
+                      color: Colors.blue,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        arrivalLabel,
+                        style: const TextStyle(
+                          color: Colors.blue,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
               const SizedBox(height: 10),
               if (_isFetchingEstimate)
                 const Row(
@@ -437,15 +543,13 @@ class _BusMapPageState extends State<BusMapPage> {
                       Text(
                         _estimateMessage!,
                         style: TextStyle(
-                          color:
-                              _isApproximateEstimate
-                                  ? Colors.orange.shade900
-                                  : Colors.black87,
+                          color: _isApproximateEstimate
+                              ? Colors.orange.shade900
+                              : Colors.black87,
                           fontSize: 12,
-                          fontWeight:
-                              _isApproximateEstimate
-                                  ? FontWeight.w600
-                                  : FontWeight.normal,
+                          fontWeight: _isApproximateEstimate
+                              ? FontWeight.w600
+                              : FontWeight.normal,
                         ),
                       ),
                     if (_estimateMessage != null) const SizedBox(height: 8),
@@ -454,23 +558,25 @@ class _BusMapPageState extends State<BusMapPage> {
                         Expanded(
                           child: _buildMetric(
                             icon: Icons.route,
-                            label:
-                                _isApproximateEstimate
-                                    ? 'Approx Distance'
-                                    : 'Distance',
+                            label: _isApproximateEstimate
+                                ? 'Approx Distance'
+                                : 'Distance',
                             value:
                                 '${_selectedBusEstimate!.distanceKm.toStringAsFixed(2)} km',
                           ),
                         ),
-                        const SizedBox(width: 12),
+                        const SizedBox(width: 10),
                         Expanded(
                           child: _buildMetric(
-                            icon: Icons.access_time,
-                            label: _isApproximateEstimate ? 'Approx ETA' : 'ETA',
-                            value:
-                                '${_selectedBusEstimate!.durationMinutes.toStringAsFixed(0)} min',
+                            icon: Icons.people_alt,
+                            label: 'Crowd Level',
+                            value: selectedBus.occupancyLevel,
+                            valueColor: selectedBus.occupancyColor,
+                            iconColor: selectedBus.occupancyColor,
                           ),
                         ),
+                        const SizedBox(width: 10),
+                        Expanded(child: _buildPickBusTile(selectedBusId)),
                       ],
                     ),
                   ],
@@ -484,10 +590,117 @@ class _BusMapPageState extends State<BusMapPage> {
     );
   }
 
+  Widget _buildPickedBusMessage() {
+    if (!_showPickedBusMessage || _pickedBusId == null) {
+      return const SizedBox.shrink();
+    }
+
+    final bottomInset = MediaQuery.of(context).padding.bottom;
+
+    return Positioned(
+      left: 12,
+      right: 12,
+      bottom: 320 + bottomInset,
+      child: Material(
+        color: Colors.transparent,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(
+            color: Colors.green,
+            borderRadius: BorderRadius.circular(12),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.2),
+                blurRadius: 8,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.check_circle, color: Colors.white, size: 20),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Bus $_pickedBusId picked successfully',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPickBusTile(String busId) {
+    return Material(
+      color: Colors.orange.shade50,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: () {
+          _pickedBusMessageTimer?.cancel();
+          setState(() {
+            _pickedBusId = busId;
+            _showPickedBusMessage = true;
+          });
+          _pickedBusMessageTimer = Timer(const Duration(seconds: 2), () {
+            if (mounted) {
+              setState(() {
+                _showPickedBusMessage = false;
+              });
+            }
+          });
+        },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Pick Bus',
+                style: const TextStyle(fontSize: 11, color: Colors.black54),
+              ),
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  const Icon(
+                    Icons.check_circle,
+                    size: 16,
+                    color: Colors.deepOrange,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      busId,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                        color: Colors.deepOrange,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildMetric({
     required IconData icon,
     required String label,
     required String value,
+    Color? valueColor,
+    Color? iconColor,
   }) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
@@ -497,7 +710,7 @@ class _BusMapPageState extends State<BusMapPage> {
       ),
       child: Row(
         children: [
-          Icon(icon, size: 16, color: Colors.deepOrange),
+          Icon(icon, size: 16, color: iconColor ?? Colors.deepOrange),
           const SizedBox(width: 8),
           Expanded(
             child: Column(
@@ -510,9 +723,10 @@ class _BusMapPageState extends State<BusMapPage> {
                 ),
                 Text(
                   value,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontWeight: FontWeight.bold,
                     fontSize: 13,
+                    color: valueColor,
                   ),
                 ),
               ],
@@ -546,55 +760,108 @@ class _BusMapPageState extends State<BusMapPage> {
   }
 
   Widget _buildRouteSelectorPanel() {
-    if (!_showRouteSelector) {
-      return const SizedBox.shrink();
-    }
+    final routeItems = <String?>[null, ...availableRoutes];
 
-    return Positioned(
-      top: 62,
-      left: 10,
-      child: Material(
-        color: Colors.white,
-        elevation: 5,
-        borderRadius: BorderRadius.circular(12),
-        child: Container(
-          width: 220,
-          padding: const EdgeInsets.all(10),
-          child: RouteSelector(
-            selectedRoute: selectedRoute,
-            availableRoutes: availableRoutes,
-            onRouteChanged: (newRoute) {
-              setState(() {
-                selectedRoute = newRoute;
-                _showRouteSelector = false;
-              });
-            },
-          ),
-        ),
-      ),
-    );
-  }
+    return Positioned.fill(
+      child: IgnorePointer(
+        ignoring: !_showRouteSelector,
+        child: AnimatedOpacity(
+          opacity: _showRouteSelector ? 1 : 0,
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOut,
+          child: Container(
+            color: Colors.black38,
+            child: SafeArea(
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: AnimatedSlide(
+                  offset: _showRouteSelector
+                      ? Offset.zero
+                      : const Offset(-1, 0),
+                  duration: const Duration(milliseconds: 240),
+                  curve: Curves.easeOutCubic,
+                  child: Material(
+                    color: Colors.white,
+                    child: SizedBox(
+                      width: MediaQuery.of(context).size.width,
+                      height: double.infinity,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 14, 8, 8),
+                            child: Row(
+                              children: [
+                                const Icon(
+                                  Icons.route,
+                                  color: Colors.deepOrange,
+                                ),
+                                const SizedBox(width: 8),
+                                const Expanded(
+                                  child: Text(
+                                    'Select Route',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 18,
+                                    ),
+                                  ),
+                                ),
+                                IconButton(
+                                  tooltip: 'Close routes',
+                                  onPressed: () {
+                                    setState(() {
+                                      _showRouteSelector = false;
+                                    });
+                                  },
+                                  icon: const Icon(Icons.close),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const Divider(height: 1),
+                          Expanded(
+                            child: ListView.builder(
+                              itemCount: routeItems.length,
+                              itemBuilder: (context, index) {
+                                final route = routeItems[index];
+                                final isSelected = selectedRoute == route;
 
-  Widget _buildTopPromptMessage() {
-    if (_selectedBusId != null) {
-      return const SizedBox.shrink();
-    }
-
-    const message = 'Select a bus on the map';
-
-    return Positioned(
-      top: 10,
-      left: 64,
-      right: 10,
-      child: Card(
-        elevation: 4,
-        color: Colors.white,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          child: Text(
-            message,
-            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                                return ListTile(
+                                  leading: Icon(
+                                    route == null
+                                        ? Icons.public
+                                        : Icons.alt_route,
+                                    color: isSelected
+                                        ? Colors.deepOrange
+                                        : Colors.black54,
+                                  ),
+                                  title: Text(route ?? 'All Routes'),
+                                  trailing: isSelected
+                                      ? const Icon(
+                                          Icons.check,
+                                          color: Colors.deepOrange,
+                                        )
+                                      : null,
+                                  selected: isSelected,
+                                  selectedTileColor: Colors.deepOrange
+                                      .withValues(alpha: 0.08),
+                                  onTap: () {
+                                    setState(() {
+                                      selectedRoute = route;
+                                      _showRouteSelector = false;
+                                    });
+                                  },
+                                );
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
           ),
         ),
       ),
@@ -603,27 +870,39 @@ class _BusMapPageState extends State<BusMapPage> {
 
   /// Build floating action buttons
   Widget _buildFloatingButtons(Map<String, BusData> displayBusData) {
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.end,
-      children: [
-        // View all buses button
-        if (displayBusData.isNotEmpty)
+    if (_showRouteSelector) {
+      return const SizedBox.shrink();
+    }
+
+    final isEtaCardVisible =
+        _selectedBusId != null && busData.containsKey(_selectedBusId);
+    final bottomLift = isEtaCardVisible ? 180.0 : 0.0;
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: bottomLift),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          // View all buses button
+          if (displayBusData.isNotEmpty)
+            FloatingActionButton(
+              heroTag: 'viewAllBusesBtn',
+              mini: true,
+              onPressed: _viewAllBuses,
+              backgroundColor: Colors.green,
+              child: const Icon(Icons.directions_bus),
+            ),
+          const SizedBox(height: 10),
+          // Center on my location button
           FloatingActionButton(
-            heroTag: 'viewAllBusesBtn',
+            heroTag: 'myLocationBtn',
             mini: true,
-            onPressed: _viewAllBuses,
-            backgroundColor: Colors.green,
-            child: const Icon(Icons.directions_bus),
+            onPressed: _centerOnMyLocation,
+            backgroundColor: Colors.deepOrange,
+            child: const Icon(Icons.my_location),
           ),
-        const SizedBox(height: 10),
-        // Center on my location button
-        FloatingActionButton(
-          heroTag: 'myLocationBtn',
-          onPressed: _centerOnMyLocation,
-          backgroundColor: Colors.deepOrange,
-          child: const Icon(Icons.my_location),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
